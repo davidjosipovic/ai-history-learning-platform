@@ -1,23 +1,59 @@
 import { Injectable } from '@nestjs/common';
+import OpenAI from 'openai';
 import { ChatMessageDto, ChatResponseDto } from './dto/chat.dto';
 
 @Injectable()
 export class ChatService {
+  private openai: OpenAI;
+
+  constructor() {
+    this.openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY || '', // Make sure to set this in your .env
+    });
+  }
+
   async processMessage(chatMessage: ChatMessageDto): Promise<ChatResponseDto> {
-    // For now, we'll send a confirmation message
-    // Later this can be enhanced with actual AI integration
-    const response = this.generateHistoryResponse(chatMessage.message);
-    
-    return {
-      response,
-      timestamp: new Date().toISOString(),
-    };
+    try {
+      // Use OpenAI to generate a history-focused response
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4.1-nano",
+        messages: [
+          {
+            role: "system",
+            content: "You are an expert AI History assistant for the AI History Learning Platform. Your role is to provide accurate, engaging, and educational responses about historical topics. Always be informative, cite historical facts when possible, and encourage further learning. Keep responses concise but comprehensive."
+          },
+          {
+            role: "user",
+            content: chatMessage.message
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const aiResponse = response.choices[0]?.message?.content || 'I apologize, but I could not generate a response at this time.';
+
+      return {
+        response: aiResponse,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.error('OpenAI API error:', error);
+      
+      // Fallback to our previous keyword-based system if OpenAI fails
+      const fallbackResponse = this.generateHistoryResponse(chatMessage.message);
+      
+      return {
+        response: fallbackResponse,
+        timestamp: new Date().toISOString(),
+      };
+    }
   }
 
   private generateHistoryResponse(message: string): string {
     const lowerMessage = message.toLowerCase();
     
-    // Simple keyword-based responses for testing
+    // Simple keyword-based responses for testing (fallback)
     if (lowerMessage.includes('hello') || lowerMessage.includes('hi')) {
       return "Hello! I'm your AI History assistant. I've received your message and I'm ready to help you explore the fascinating world of history!";
     }
