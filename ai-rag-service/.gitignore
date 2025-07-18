@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+# VSCode
+.vscode/
+# OS
+.DS_Store
+Thumbs.db
+# Jupyter
+.ipynb_checkpoints/
+# Logs
+*.log
+# Test
+.coverage
+htmlcov/
+# MyPy
+.mypy_cache/
+# Pyright
+.pyright/
