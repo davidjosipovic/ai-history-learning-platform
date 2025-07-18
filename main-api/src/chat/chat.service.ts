@@ -3,7 +3,7 @@ import { ChatMessageDto, ChatResponseDto } from './dto/chat.dto';
 
 @Injectable()
 export class ChatService {
-  private aiRagUrl = process.env.AI_RAG_URL || 'http://localhost:8000/ai';
+  private aiRagUrl = process.env.AI_RAG_URL || 'http://localhost:8000/ai/';
 
   async processMessage(chatMessage: ChatMessageDto): Promise<ChatResponseDto> {
     try {
