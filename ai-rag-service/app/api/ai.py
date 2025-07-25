@@ -13,6 +13,9 @@ from app.core.internet_archive import (
     search_internet_archive_advanced    # Koristi advanced search endpoint
 )
 
+# Import downloader for full text extraction
+from app.core.internet_archive_downloader import InternetArchiveDownloader
+
 # Pretpostavljam da su ove funkcije ispravno implementirane
 from app.core.text_chunking import chunk_text 
 from app.core.chroma_db import add_documents_with_embeddings, query_similar_documents, get_chroma_client # Dodana get_chroma_client
@@ -73,11 +76,81 @@ async def ai_generate(request: AIRequest):
     # Lista za praćenje originalnih podataka o knjigama
     book_info_map = {} 
 
-    # 3. Process each found book description for chunking and indexing
+    # 3. Download and process full text content from relevant books
+    downloader = InternetArchiveDownloader()
+    
+    # Filter books to only include historically relevant ones
+    relevant_books = []
     for book in books:
         book_id = book.get("identifier", "")
+        book_title = book.get("title", "").lower()
+        
+        # Handle description field - can be string or list
+        description = book.get("description", "")
+        if isinstance(description, list):
+            book_desc = " ".join(description).lower()
+        else:
+            book_desc = str(description).lower()
+        
+        # Skip obviously irrelevant content early
+        irrelevant_title_terms = [
+            "judo training", "bone mineral", "hackett letter", "nursing", "drug handbook", 
+            "medical", "cookbook", "recipe", "software", "programming", "computer",
+            "fitness", "diet", "health guide", "manual", "instruction", "how to"
+        ]
+        
+        irrelevant_desc_terms = [
+            "baraboo, wi", "cumberland gap", "medical care", "nursing practice",
+            "drug dosage", "pharmaceutical", "medicine", "cookbook", "recipes"
+        ]
+        
+        if any(term in book_title for term in irrelevant_title_terms):
+            print(f"Skipping irrelevant book: {book_id}")
+            continue
+            
+        if any(term in book_desc for term in irrelevant_desc_terms):
+            print(f"Skipping irrelevant book: {book_id}")
+            continue
+            
+        # Additional check: prefer books with historical/political keywords
+        historical_terms = [
+            "hrvatska", "croatia", "yugoslavia", "jugoslavija", "balkan", "europe"
+        ]
+        has_historical_content = (
+            any(term in book_title for term in historical_terms) or
+            any(term in book_desc for term in historical_terms)
+        )
+        
+        if not has_historical_content:
+            print(f"Skipping non-historical book: {book_id}")
+            continue
+            
+        relevant_books.append(book)
+        print(f"Selected for download: {book_id} - {book.get('title')}")
+    
+    if not relevant_books:
+        return AIResponse(answer="Nisu pronađene relevantne knjige za preuzimanje i analizu.")
+    
+    # Download full text content from top 2-3 most relevant books
+    book_identifiers = [book.get("identifier") for book in relevant_books[:3]]
+    print(f"Downloading full text from books: {book_identifiers}")
+    
+    book_texts = downloader.download_multiple_books(book_identifiers)
+    
+    if not book_texts:
+        return AIResponse(answer="Nije moguće preuzeti sadržaj knjiga za analizu.")
+
+    # 4. Process downloaded texts for chunking and indexing
+    all_chunks_to_add = []
+    all_metadatas_to_add = []
+    all_chunk_ids_to_add = []
+    
+    # Lista za praćenje originalnih podataka o knjigama
+    book_info_map = {} 
+
+    for book in relevant_books:
+        book_id = book.get("identifier", "")
         book_title = book.get("title", "N/A")
-        book_desc = book.get("description", "")
         
         # Pohrani podatke o knjizi za kasnije
         book_info_map[book_id] = {
@@ -85,38 +158,55 @@ async def ai_generate(request: AIRequest):
             "link": f"https://archive.org/details/{book_id}" if book_id else ""
         }
         
-        print(f"Processing book: {book_id} - '{book_title}' (Desc length: {len(book_desc) if book_desc else 0})")
+        # Get downloaded text for this book
+        full_text = book_texts.get(book_id, "")
         
-        # Ako nema opisa, preskoči
-        if not book_desc:
-            print(f"Skipping {book_id}: No description available.")
+        if not full_text:
+            print(f"No text content available for {book_id}, using description fallback")
+            description = book.get("description", "")
+            if isinstance(description, list):
+                full_text = " ".join(description)
+            else:
+                full_text = str(description)
+        
+        if not full_text or len(full_text.strip()) < 50:
+            print(f"Skipping {book_id}: No substantial text content")
             continue
         
-        # Opis knjige je rijetko jako dug. Umjesto chunkinga, možda je bolje koristiti cijeli opis
-        # kao jedan dokument, osim ako opisi nisu iznenađujuće dugi.
-        # Primjer s chunkingom (ako je potrebno):
-        chunks = chunk_text(book_desc) # Pretpostavljam da je chunk_text ispravan
+        print(f"Processing book: {book_id} - '{book_title}' (Text length: {len(full_text)} chars)")
+        
+        # Chunk the full text content
+        chunks = chunk_text(full_text)
         
         if not chunks:
             print(f"No chunks generated for {book_id}. Skipping.")
             continue
 
+        print(f"Generated {len(chunks)} chunks from {book_id}")
+        
         for i, chunk in enumerate(chunks):
-            chunk_id = f"{book_id}_chunk_{i}"
+            chunk_id = f"{book_id}_fulltext_chunk_{i}"
             metadata = {
                 "book_id": book_id,
                 "title": book_title,
-                "chunk_index": i
+                "chunk_index": i,
+                "source_type": "full_text"  # Mark as full text vs description
             }
             all_chunks_to_add.append(chunk)
             all_metadatas_to_add.append(metadata)
             all_chunk_ids_to_add.append(chunk_id)
             
     if not all_chunks_to_add:
-        return AIResponse(answer=f"Nijedan opis knjige nije bio relevantan ili dovoljno dug za obradu.")
+        return AIResponse(answer=f"Nije moguće obraditi sadržaj preuzete knjige za analizu.")
 
-    # 4. Add all collected chunks to ChromaDB (or update existing)
-    print(f"Adding {len(all_chunks_to_add)} chunks to ChromaDB.")
+    # Debug: Print what book_ids we're about to add
+    chunk_book_ids = set()
+    for metadata in all_metadatas_to_add:
+        chunk_book_ids.add(metadata.get("book_id", "MISSING"))
+    print(f"DEBUG: About to add {len(all_chunks_to_add)} chunks from books: {chunk_book_ids}")
+
+    # 5. Add all collected chunks to ChromaDB (or update existing)
+    print(f"Adding {len(all_chunks_to_add)} full-text chunks to ChromaDB.")
     try:
         add_documents_with_embeddings(all_chunks_to_add, all_metadatas_to_add, all_chunk_ids_to_add)
         
@@ -132,7 +222,7 @@ async def ai_generate(request: AIRequest):
         # Možete ovdje baciti HTTPException ako je to kritična greška
         raise HTTPException(status_code=500, detail="Database indexing failed.")
 
-    # 5. Find the MOST relevant chunks from CURRENT books only
+    # 6. Find the MOST relevant chunks from CURRENT books only
     print(f"Querying ChromaDB for relevant chunks for question: '{request.question}'")
     # Get book IDs from current search to filter results
     current_book_ids = set(book_info_map.keys())

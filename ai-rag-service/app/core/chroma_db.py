@@ -84,6 +84,7 @@ def add_documents_with_embeddings(docs: List[str], metadatas: List[Dict], ids: L
     Adds documents to the ChromaDB collection.
     Automatically generates embeddings using the collection's defined embedding function.
     Handles existing IDs by attempting to update.
+    Implements batching to avoid ChromaDB batch size limits.
     """
     collection = get_or_create_collection() # Get the collection instance
     if collection is None:
@@ -91,22 +92,55 @@ def add_documents_with_embeddings(docs: List[str], metadatas: List[Dict], ids: L
         return
 
     try:
-        # ChromaDB `add` can handle updates by attempting to add an existing ID.
-        # It will either add a new document or replace an existing one.
-        # However, for explicit updates, `upsert` is more clear.
-        # Let's use `upsert` for explicit control over updates.
+        # ChromaDB has a maximum batch size limit, so we need to process in batches
+        BATCH_SIZE = 5000  # Safe batch size, well below ChromaDB's limit
+        total_docs = len(docs)
         
-        # Split into new and existing IDs to use `add` for new and `upsert` for existing,
-        # or simply use `upsert` for all if you want to update on every call.
+        # Debug: Print first few book_ids to verify they're being added correctly
+        if metadatas:
+            sample_book_ids = set()
+            for metadata in metadatas:  # Check ALL metadata, not just first 10
+                book_id = metadata.get("book_id", "MISSING_BOOK_ID")
+                sample_book_ids.add(book_id)
+            print(f"DEBUG: Adding documents with book_ids: {sample_book_ids}")
+            print(f"DEBUG: Total {len(metadatas)} documents being added")
         
-        # Simple upsert for all (will add if not exists, update if exists)
-        # Note: If your collection has an embedding function, you don't need to pass 'embeddings' here.
-        collection.upsert(
-            documents=docs,
-            metadatas=metadatas,
-            ids=ids
-        )
-        print(f"Successfully added/updated {len(docs)} documents to ChromaDB.")
+        for i in range(0, total_docs, BATCH_SIZE):
+            end_idx = min(i + BATCH_SIZE, total_docs)
+            batch_docs = docs[i:end_idx]
+            batch_metadatas = metadatas[i:end_idx]
+            batch_ids = ids[i:end_idx]
+            
+            print(f"Processing batch {i//BATCH_SIZE + 1}: documents {i+1}-{end_idx} of {total_docs}")
+            
+            # Simple upsert for all (will add if not exists, update if exists)
+            # Note: If your collection has an embedding function, you don't need to pass 'embeddings' here.
+            collection.upsert(
+                documents=batch_docs,
+                metadatas=batch_metadatas,
+                ids=batch_ids
+            )
+            
+        print(f"Successfully added/updated {total_docs} documents to ChromaDB in {(total_docs + BATCH_SIZE - 1) // BATCH_SIZE} batches.")
+        
+        # Debug: Print some stats about what's in the collection after adding
+        print(f"DEBUG: Collection now has {collection.count()} total documents")
+        
+        # Debug: Query to see what book_ids are actually in the collection now
+        try:
+            sample_query = collection.query(
+                query_texts=["test query"],
+                n_results=5,
+                include=['metadatas']
+            )
+            if sample_query.get("metadatas") and sample_query["metadatas"][0]:
+                stored_book_ids = set()
+                for metadata in sample_query["metadatas"][0]:
+                    stored_book_ids.add(metadata.get("book_id", "MISSING"))
+                print(f"DEBUG: Sample of book_ids now in collection: {stored_book_ids}")
+        except Exception as debug_e:
+            print(f"DEBUG: Could not sample collection contents: {debug_e}")
+            
     except Exception as e:
         print(f"ERROR: Failed to add/update documents to ChromaDB: {e}")
 
@@ -122,11 +156,21 @@ def query_similar_documents(query: str, n_results: int = 3) -> Dict[str, List[Un
         return {"ids": [], "embeddings": [], "documents": [], "metadatas": [], "distances": []}
 
     try:
+        print(f"DEBUG: Querying collection with {collection.count()} total documents")
+        
         results = collection.query(
             query_texts=[query],
             n_results=n_results,
             include=['documents', 'metadatas', 'distances'] # Explicitly request what you need
         )
+        
+        # Debug: Print what book_ids are returned
+        if results.get("metadatas") and results["metadatas"][0]:
+            returned_book_ids = set()
+            for metadata in results["metadatas"][0]:
+                returned_book_ids.add(metadata.get("book_id", "MISSING"))
+            print(f"DEBUG: Query returned documents from book_ids: {returned_book_ids}")
+        
         # ChromaDB's query method returns results in a specific format:
         # {'ids': [[]], 'embeddings': [[]], 'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
         # The inner lists correspond to query_texts, so we usually take the first element if querying with one text.
