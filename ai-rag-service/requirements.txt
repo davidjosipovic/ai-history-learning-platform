@@ -5,3 +5,8 @@ python-dotenv
 requests
 chromadb
 sentence-transformers
+
+# New dependencies for full text processing
+PyPDF2==3.0.1
+pdfplumber==0.10.0
+chardet==5.2.0
