@@ -46,6 +46,7 @@ def generate_keywords_from_question(question: str) -> List[str]:
         "1. Glavni entitet (država/organizacija): koristi puni naziv (npr. 'Nezavisna Država Hrvatska', 'Soviet Union', 'Roman Empire') "
         "2. Ključne osobe: UVIJEK puno ime i prezime (npr. 'Napoleon Bonaparte', 'Winston Churchill', 'Ante Pavelić') "
         "3. Specifični kontekst: organizacije, regije, godine ako su ključne "
+        "4. Za vremenska/detaljka pitanja: uključi kontekst (npr. 'church sunday morning', 'arrived time') "
         "**IZBJEGAVAJ** općenite termine kao 'World War II' - fokusiraj se na specifične entitete. "
         "**JEZIK**: Koristi jezik koji će dati najbolje rezultate na Internet Archive (često engleski za internacionalne teme). "
         "Rezultat mora biti JSON array stringova (maksimalno 4 termina). "
@@ -195,24 +196,31 @@ def build_internet_archive_query_string(keywords: List[str]) -> str:
                 simple_parts.append(keyword)
         combined_keywords = " OR ".join(simple_parts)
     
-    # Add mediatype filter to focus on books/texts
-    final_query = f"mediatype:(texts) AND ({combined_keywords})"
+    # UVIJEK dodaj mediatype:(texts) filter za fokus na knjige/tekstove
+    if combined_keywords:
+        final_query = f"mediatype:(texts) AND ({combined_keywords})"
+    else:
+        # Ako nema ključnih riječi, pretraži samo tekstove
+        final_query = "mediatype:(texts)"
     
     print(f"Built strategic search query: {final_query}")
     return final_query
 
 
-def search_internet_archive_advanced(query_string: str, rows: int = 10) -> List[Dict]:
+def search_internet_archive_advanced(query_string: str, rows: int = 50) -> List[Dict]:
     """
     Search Internet Archive using the advanced search endpoint.
     The query_string should be a raw, unencoded string. 'requests' will handle encoding.
     Returns a list of metadata dicts for the top results.
+    Automatically adds mediatype:(texts) filter.
     """
     params = {
         "q": query_string,
-        "fl[]": ["identifier", "title", "creator", "description", "publicdate"],
+        "fl[]": ["identifier", "title", "creator", "description", "publicdate", "date"],  # Dodaj potrebne metapodatke
         "rows": rows,
-        "output": "json"
+        "page": 1,
+        "output": "json",
+        "save": "yes"
     }
     
     try:
@@ -269,7 +277,7 @@ def search_internet_archive_advanced(query_string: str, rows: int = 10) -> List[
                 
             except (IndexError, AttributeError) as e:
                 print(f"Could not parse fallback query: {e}")
-                # Ultimate fallback - search for general historical terms
+                # Ultimate fallback - search for general historical terms, uvijek s mediatype:(texts)
                 params["q"] = 'mediatype:(texts) AND ("history" OR "historical" OR "empire" OR "war")'
                 try:
                     resp = requests.get(INTERNET_ARCHIVE_ADVANCED_SEARCH_URL, params=params, timeout=10)
@@ -288,7 +296,7 @@ def search_internet_archive_advanced(query_string: str, rows: int = 10) -> List[
                 "identifier": doc.get("identifier", ""),
                 "title": doc.get("title", ""),
                 "creator": doc.get("creator", ""),
-                "public_date": doc.get("publicdate", ""), # Use publicdate as it's more reliable
+                "public_date": doc.get("publicdate", doc.get("date", "")), # Use publicdate as it's more reliable
                 "description": doc.get("description", "")
             })
         return results
@@ -296,7 +304,8 @@ def search_internet_archive_advanced(query_string: str, rows: int = 10) -> List[
         print(f"ERROR: Network or HTTP error during Internet Archive search: {req_err}")
         return []
     except json.JSONDecodeError as json_err:
-        print(f"ERROR: JSON decoding error from Internet Archive response: {json_err}. Response content: {resp.text}")
+        print(f"ERROR: JSON decoding error from Internet Archive response: {json_err}")
+        print(f"Response content (first 500 chars): {resp.text[:500]}")
         return []
     except Exception as e:
         print(f"An unexpected error occurred during Internet Archive search: {e}")
@@ -336,7 +345,7 @@ if __name__ == "__main__":
         print(f"  IA Query String (URL-encoded 'q'): {ia_query_string}")
 
         print("3. Pretražujem Internet Archive...")
-        # Koristimo search_internet_archive_advanced
+        # Koristimo search_internet_archive_advanced s novom zadanom vrijednošću rows=50
         books_found = search_internet_archive_advanced(ia_query_string, rows=5)
         
         if books_found:

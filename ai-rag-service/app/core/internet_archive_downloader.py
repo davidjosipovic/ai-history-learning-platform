@@ -1,6 +1,8 @@
 import requests
 import os
 import time
+import gzip
+import shutil
 from typing import List, Dict, Optional
 import PyPDF2
 import zipfile
@@ -30,11 +32,17 @@ class InternetArchiveDownloader:
             metadata = response.json()
             files = metadata.get("files", [])
             
-            # Filter for text-based files
+            # Filter for text-based files but exclude problematic formats
             text_files = []
             for file in files:
                 name = file.get("name", "").lower()
                 format_type = file.get("format", "").lower()
+                
+                # Skip .gz files unless they're clearly text files we can handle
+                if name.endswith('.gz'):
+                    # Only accept .txt.gz files that are searchable text
+                    if not ('hocr_searchtext.txt.gz' in name or 'searchtext.txt.gz' in name):
+                        continue
                 
                 # Look for PDF, TXT, or other readable formats
                 if any(ext in name for ext in [".pdf", ".txt", ".epub"]) or \
@@ -61,8 +69,8 @@ class InternetArchiveDownloader:
             url = f"{self.base_url}/download/{identifier}/{filename}"
             local_path = os.path.join(self.download_dir, f"{identifier}_{filename}")
             
-            # Skip if already downloaded
-            if os.path.exists(local_path):
+            # Skip if already downloaded and file exists
+            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                 print(f"File already exists: {local_path}")
                 return local_path
             
@@ -99,9 +107,14 @@ class InternetArchiveDownloader:
     
     def extract_text_from_txt(self, txt_path: str) -> str:
         """
-        Extract text from TXT file.
+        Extract text from TXT file. Handles both regular .txt and .gz compressed files.
         """
         try:
+            # Handle .gz files
+            if txt_path.lower().endswith('.gz'):
+                return self.extract_text_from_gz(txt_path)
+            
+            # Handle regular text files
             encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
             for encoding in encodings:
                 try:
@@ -114,10 +127,40 @@ class InternetArchiveDownloader:
             print(f"Error reading text file {txt_path}: {e}")
             return ""
     
-    def download_and_extract_text(self, identifier: str, max_files: int = 2) -> str:
+    def extract_text_from_gz(self, gz_path: str) -> str:
+        """
+        Extract text from a .gz compressed file.
+        """
+        try:
+            with gzip.open(gz_path, 'rt', encoding='utf-8') as f:
+                content = f.read()
+                # Clean up content - remove control characters and decode properly
+                import re
+                # Remove common OCR artifacts and control characters
+                content = re.sub(r'[^\x20-\x7E\n\r\t]', ' ', content)
+                # Normalize whitespace
+                content = re.sub(r'\s+', ' ', content)
+                return content.strip()
+        except UnicodeDecodeError:
+            # Try with latin-1 encoding
+            try:
+                with gzip.open(gz_path, 'rt', encoding='latin-1') as f:
+                    content = f.read()
+                    import re
+                    content = re.sub(r'[^\x20-\x7E\n\r\t]', ' ', content)
+                    content = re.sub(r'\s+', ' ', content)
+                    return content.strip()
+            except Exception as e:
+                print(f"Error reading gz file with latin-1: {e}")
+                return ""
+        except Exception as e:
+            print(f"Error extracting text from gz file {gz_path}: {e}")
+            return ""
+    
+    def download_and_extract_text(self, identifier: str, max_files: int = 2, max_chars: int = 50000) -> str:
         """
         Download and extract text content from an Internet Archive item.
-        Returns combined text content.
+        Returns combined text content limited to max_chars to avoid context overflow.
         """
         print(f"Processing Internet Archive item: {identifier}")
         
@@ -152,14 +195,23 @@ class InternetArchiveDownloader:
             text_content = ""
             if filename.lower().endswith('.pdf') or 'pdf' in file_format:
                 text_content = self.extract_text_from_pdf(local_path)
-            elif filename.lower().endswith('.txt') or 'text' in file_format:
+            elif filename.lower().endswith(('.txt', '.txt.gz')) or 'text' in file_format:
                 text_content = self.extract_text_from_txt(local_path)
             
             if text_content:
+                # Limit text content to avoid very large texts
+                if len(text_content) > max_chars // max_files:
+                    text_content = text_content[:max_chars // max_files] + "... [truncated]"
+                
                 combined_text += f"\n\n=== Content from {filename} ===\n\n"
                 combined_text += text_content
                 downloaded_count += 1
                 print(f"Extracted {len(text_content)} characters from {filename}")
+                
+                # Stop if we've reached character limit
+                if len(combined_text) >= max_chars:
+                    combined_text = combined_text[:max_chars] + "... [truncated]"
+                    break
             
             # Clean up downloaded file to save space
             try:

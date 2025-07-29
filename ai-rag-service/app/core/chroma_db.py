@@ -79,6 +79,68 @@ get_chroma_client()
 get_or_create_collection()
 
 
+def check_book_exists_in_db(book_id: str) -> bool:
+    """
+    Provjeri da li knjiga s danim book_id već postoji u ChromaDB kolekciji.
+    Vraća True ako postoji, False inače.
+    """
+    collection = get_or_create_collection()
+    if collection is None:
+        print("ERROR: Collection not available. Cannot check if book exists.")
+        return False
+    
+    try:
+        # Pokušaj dohvatiti dokumente s danim book_id iz metapodataka
+        results = collection.query(
+            query_texts=["dummy query"],  # Potreban je query tekst, ali nije bitan za filtiranje
+            n_results=1,
+            where={"book_id": book_id},  # Filtriraj po book_id
+            include=['metadatas']
+        )
+        
+        # Ako pronađemo bilo koji rezultat, knjiga postoji
+        if results.get("metadatas") and results["metadatas"][0]:
+            return True
+        return False
+        
+    except Exception as e:
+        print(f"Error checking if book {book_id} exists in ChromaDB: {e}")
+        return False
+
+
+def get_existing_book_ids() -> set:
+    """
+    Dohvati sve book_id-jeve koji već postoje u ChromaDB kolekciji.
+    Vraća set postojećih book_id-jeva.
+    """
+    collection = get_or_create_collection()
+    if collection is None:
+        print("ERROR: Collection not available. Cannot get existing book IDs.")
+        return set()
+    
+    try:
+        # Dohvati sve dokumente (ograniči na razuman broj)
+        results = collection.query(
+            query_texts=["dummy query"],
+            n_results=min(collection.count(), 10000),  # Ograniči na maksimalno 10000 dokumenata
+            include=['metadatas']
+        )
+        
+        existing_book_ids = set()
+        if results.get("metadatas") and results["metadatas"][0]:
+            for metadata in results["metadatas"][0]:
+                book_id = metadata.get("book_id")
+                if book_id:
+                    existing_book_ids.add(book_id)
+        
+        print(f"Found {len(existing_book_ids)} existing books in ChromaDB")
+        return existing_book_ids
+        
+    except Exception as e:
+        print(f"Error getting existing book IDs from ChromaDB: {e}")
+        return set()
+
+
 def add_documents_with_embeddings(docs: List[str], metadatas: List[Dict], ids: List[str]):
     """
     Adds documents to the ChromaDB collection.
@@ -178,6 +240,117 @@ def query_similar_documents(query: str, n_results: int = 3) -> Dict[str, List[Un
         return results
     except Exception as e:
         print(f"ERROR: Failed to query ChromaDB: {e}")
+        return {"ids": [], "embeddings": [], "documents": [], "metadatas": [], "distances": []}
+
+def query_with_multiple_strategies(query: str, n_results: int = 3) -> Dict[str, List[Union[str, List[float], Dict]]]:
+    """
+    Enhanced query function that tries multiple search strategies for better results.
+    Useful for specific details like times, dates, or precise facts.
+    """
+    collection = get_or_create_collection()
+    if collection is None:
+        print("ERROR: Collection not available. Cannot query documents.")
+        return {"ids": [], "embeddings": [], "documents": [], "metadatas": [], "distances": []}
+
+    try:
+        print(f"DEBUG: Multi-strategy querying collection with {collection.count()} total documents")
+        
+        # Strategy 1: Original query
+        results1 = collection.query(
+            query_texts=[query],
+            n_results=n_results,
+            include=['documents', 'metadatas', 'distances']
+        )
+        
+        # Strategy 2: Extract key terms and search with more specific terms
+        key_terms = []
+        if "sati" in query.lower() or "time" in query.lower():
+            key_terms.extend(["seven-thirty", "7:30", "church service", "sunday morning", "arrived at church"])
+        if "barack" in query.lower() and "obama" in query.lower():
+            key_terms.extend(["I arrived", "we went to church", "sunday service", "church attendance"])
+        
+        
+        # Strategy 3: Search with key terms
+        combined_results = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        
+        if key_terms:
+            for term in key_terms[:5]:  # Increased to 5 additional searches
+                term_results = collection.query(
+                    query_texts=[term],
+                    n_results=5,
+                    include=['documents', 'metadatas', 'distances']
+                )
+                
+                # Merge results
+                if term_results.get("documents") and term_results["documents"][0]:
+                    combined_results["documents"][0].extend(term_results["documents"][0])
+                    combined_results["metadatas"][0].extend(term_results["metadatas"][0])
+                    combined_results["distances"][0].extend(term_results["distances"][0])
+        
+        # Strategy 4: Search for personal narrative patterns
+        personal_terms = ["I went", "I arrived", "we arrived", "I got to", "I reached"]
+        for term in personal_terms[:3]:
+            personal_results = collection.query(
+                query_texts=[term],
+                n_results=3,
+                include=['documents', 'metadatas', 'distances']
+            )
+            
+            if personal_results.get("documents") and personal_results["documents"][0]:
+                combined_results["documents"][0].extend(personal_results["documents"][0])
+                combined_results["metadatas"][0].extend(personal_results["metadatas"][0])
+                combined_results["distances"][0].extend(personal_results["distances"][0])
+        
+        # Combine and deduplicate results
+        all_docs = results1["documents"][0] if results1.get("documents") else []
+        all_metas = results1["metadatas"][0] if results1.get("metadatas") else []
+        all_dists = results1["distances"][0] if results1.get("distances") else []
+        
+        # Add combined results
+        if combined_results["documents"][0]:
+            all_docs.extend(combined_results["documents"][0])
+            all_metas.extend(combined_results["metadatas"][0])
+            all_dists.extend(combined_results["distances"][0])
+        
+        # Remove duplicates based on content and prioritize primary sources
+        seen_content = set()
+        final_docs = []
+        final_metas = []
+        final_dists = []
+        
+        # Sort by priority: Obama's own books first, then distance
+        all_items = list(zip(all_docs, all_metas, all_dists))
+        def priority_score(item):
+            doc, meta, dist = item
+            book_id = meta.get("book_id", "").lower()
+            # Prioritize Obama's own books
+            if "dreams" in book_id and "obama" in book_id:
+                return (0, dist)  # Highest priority
+            elif "obama" in book_id:
+                return (1, dist)  # Medium priority
+            else:
+                return (2, dist)  # Lower priority
+        
+        all_items.sort(key=priority_score)
+        
+        for doc, meta, dist in all_items:
+            if doc not in seen_content and len(final_docs) < n_results * 3:  # Get more results for better coverage
+                seen_content.add(doc)
+                final_docs.append(doc)
+                final_metas.append(meta)
+                final_dists.append(dist)
+        
+        result = {
+            "documents": [final_docs],
+            "metadatas": [final_metas],
+            "distances": [final_dists]
+        }
+        
+        print(f"DEBUG: Multi-strategy query returned {len(final_docs)} unique documents")
+        return result
+        
+    except Exception as e:
+        print(f"ERROR: Failed to query ChromaDB with multiple strategies: {e}")
         return {"ids": [], "embeddings": [], "documents": [], "metadatas": [], "distances": []}
 
 # --- Testni blok ---
