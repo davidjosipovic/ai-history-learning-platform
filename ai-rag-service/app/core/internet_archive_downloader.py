@@ -247,18 +247,3 @@ class InternetArchiveDownloader:
         
         return results
 
-
-# Test function
-if __name__ == "__main__":
-    downloader = InternetArchiveDownloader()
-    
-    # Test with NDH-related book
-    test_identifier = "35-mucenika-hrvatske-vojske-ndh"
-    text = downloader.download_and_extract_text(test_identifier)
-    
-    if text:
-        print(f"\nExtracted text preview (first 500 chars):")
-        print(text[:500])
-        print(f"\nTotal length: {len(text)} characters")
-    else:
-        print("No text extracted")

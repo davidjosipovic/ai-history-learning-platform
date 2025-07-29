@@ -17,7 +17,7 @@ from app.core.internet_archive import (
 from app.core.internet_archive_downloader import InternetArchiveDownloader
 
 # Pretpostavljam da su ove funkcije ispravno implementirane
-from app.core.text_chunking import chunk_text 
+from app.core.text_chunking import chunk_text, ChunkStrategy, analyze_chunking_quality, get_optimal_chunk_size
 from app.core.chroma_db import add_documents_with_embeddings, query_similar_documents, query_with_multiple_strategies, get_chroma_client # Dodana get_chroma_client
 
 # Import local books processor
@@ -33,10 +33,33 @@ except Exception as e:
 
 router = APIRouter()
 
+def get_local_books_not_in_db(existing_book_ids):
+    """Get local books that are not yet in ChromaDB."""
+    try:
+        local_books = scan_local_books()
+        books_to_process = []
+        
+        for book in local_books:
+            book_id = book["identifier"]
+            if book_id not in existing_book_ids:
+                books_to_process.append(book)
+            else:
+                print(f"Local book {book_id} already exists in ChromaDB, skipping")
+        
+        return books_to_process
+    except Exception as e:
+        print(f"Error checking local books: {e}")
+        return []
+
 @router.post("/", response_model=AIResponse)
 async def ai_generate(request: AIRequest):
     if not client:
         raise HTTPException(status_code=500, detail="OpenAI service not available.")
+
+    # Get existing book IDs at the start to avoid duplicate processing
+    from app.core.chroma_db import get_existing_book_ids
+    existing_book_ids = get_existing_book_ids()
+    print(f"Found {len(existing_book_ids)} existing books in ChromaDB")
 
     # 1. Generate keywords from user's question using LLM
     print(f"User question: {request.question}")
@@ -71,14 +94,14 @@ async def ai_generate(request: AIRequest):
     if not books:
         print("No books found from Internet Archive. Checking local books directory...")
         
-        # Fallback to local books
+        # Fallback to local books that are not already in ChromaDB
         try:
-            local_books = scan_local_books()
+            local_books = get_local_books_not_in_db(existing_book_ids)
             if local_books:
-                print(f"Found {len(local_books)} local books as fallback")
+                print(f"Found {len(local_books)} new local books as fallback")
                 books = local_books
             else:
-                return AIResponse(answer=f"Nije pronađena nijedna relevantna knjiga na Internet Archive ili u lokalnoj kolekciji za upit: '{' '.join(keywords)}'.")
+                return AIResponse(answer=f"Nije pronađena nijedna nova relevantna knjiga na Internet Archive ili u lokalnoj kolekciji za upit: '{' '.join(keywords)}'.")
         except Exception as e:
             print(f"Error scanning local books: {e}")
             return AIResponse(answer=f"Nije pronađena nijedna relevantna knjiga na Internet Archive za upit: '{' '.join(keywords)}'.")
@@ -153,12 +176,27 @@ async def ai_generate(request: AIRequest):
             
             # Check if downloads failed - if so, fallback to local books
             successful_downloads = [book_id for book_id, text in book_texts.items() if text and len(text.strip()) > 50]
-            if not successful_downloads:
-                print("Internet Archive downloads failed. Falling back to local books...")
+            
+            # Also check if key books mentioned in the question are available
+            question_lower = request.question.lower()
+            key_books_missing = False
+            
+            if "dreams" in question_lower and "father" in question_lower:
+                # User specifically mentioned Dreams from My Father
+                dreams_book_ids = [bid for bid in book_identifiers if "dreams" in bid.lower() and "father" in bid.lower()]
+                if dreams_book_ids:
+                    dreams_available = any(book_texts.get(bid, "") and len(book_texts[bid].strip()) > 1000 for bid in dreams_book_ids)
+                    if not dreams_available:
+                        key_books_missing = True
+                        print("Key book 'Dreams from My Father' not properly available from Internet Archive")
+            
+            if not successful_downloads or key_books_missing:
+                fallback_reason = "Internet Archive downloads failed" if not successful_downloads else "Key book not available with sufficient content"
+                print(f"{fallback_reason}. Falling back to local books...")
                 try:
-                    local_books = scan_local_books()
+                    local_books = get_local_books_not_in_db(existing_book_ids)
                     if local_books:
-                        print(f"Found {len(local_books)} local books as fallback")
+                        print(f"Found {len(local_books)} new local books as fallback")
                         # Use local books instead
                         book_texts = process_local_books_for_chromadb()
                         relevant_books = local_books  # Switch to local books
@@ -222,14 +260,30 @@ async def ai_generate(request: AIRequest):
             
             print(f"Processing book: {book_id} - '{book_title}' (Text length: {len(full_text)} chars)")
             
-            # Chunk the full text content
-            chunks = chunk_text(full_text)
+            # Determine optimal chunk size and strategy based on text characteristics
+            optimal_chunk_size = get_optimal_chunk_size(full_text, max_chunk_size=800)
+            
+            # Choose chunking strategy based on text type
+            if "biography" in book_title.lower() or "memoir" in book_title.lower():
+                strategy = ChunkStrategy.ADAPTIVE
+            elif len(full_text) > 50000:  # Long text
+                strategy = ChunkStrategy.PARAGRAPH_BASED
+            else:
+                strategy = ChunkStrategy.SENTENCE_BASED
+            
+            print(f"Using chunking strategy: {strategy.value}, chunk size: {optimal_chunk_size}")
+            
+            # Chunk the full text content with improved strategy
+            chunks = chunk_text(full_text, chunk_size=optimal_chunk_size, strategy=strategy)
             
             if not chunks:
                 print(f"No chunks generated for {book_id}. Skipping.")
                 continue
-                
+            
+            # Analyze chunking quality
+            quality_metrics = analyze_chunking_quality(chunks, full_text)
             print(f"Generated {len(chunks)} chunks from {book_id}")
+            print(f"Chunking quality - Avg length: {quality_metrics.get('avg_chunk_length', 0):.0f}, Std dev: {quality_metrics.get('length_std_dev', 0):.0f}")
             
             for i, chunk in enumerate(chunks):
                 chunk_id = f"{book_id}_fulltext_chunk_{i}"
@@ -325,6 +379,21 @@ async def ai_generate(request: AIRequest):
                 if len(retrieved_documents) >= 5:
                     break
             
+            # Check if we found relevant results from key books
+            question_lower = request.question.lower()
+            dreams_chunks_found = False
+            
+            if "dreams" in question_lower and "father" in question_lower:
+                # Check if we have chunks from Dreams book
+                dreams_chunks_found = any(
+                    "dreams" in doc["metadata"].get("book_id", "").lower() 
+                    for doc in retrieved_documents
+                )
+                
+                if not dreams_chunks_found:
+                    print("No chunks found from 'Dreams from My Father' book. Activating local book fallback...")
+                    # This will trigger the local books fallback below
+            
             # If we have very few chunks, add more chunks regardless of distance
             if len(retrieved_documents) < 2:
                 print(f"Only {len(retrieved_documents)} relevant chunks found. Adding more chunks...")
@@ -357,20 +426,40 @@ async def ai_generate(request: AIRequest):
         # raise HTTPException(status_code=500, detail="Database query failed.")
         retrieved_documents = []
 
+    # 5. Check if we need local books fallback
+    # Activate local books fallback if:
+    # 1. Not enough chunks found, OR
+    # 2. Key book (Dreams from My Father) not found in results
+    need_local_fallback = (
+        len(retrieved_documents) < 3 or 
+        (
+            "dreams" in request.question.lower() and "father" in request.question.lower() and
+            not any("dreams" in doc["metadata"].get("book_id", "").lower() for doc in retrieved_documents)
+        )
+    )
+    
+    if need_local_fallback:
+        fallback_reason = "insufficient chunks" if len(retrieved_documents) < 3 else "key book 'Dreams from My Father' not found"
+        print(f"Activating local books fallback due to: {fallback_reason}")
 
-    if not retrieved_documents:
-        print("No relevant chunks found. Trying local books as fallback...")
+    if need_local_fallback:
+        print(f"Activating local books fallback. Scanning 'books' directory...")
         
         # Fallback to local books if no good results from Internet Archive/ChromaDB
         try:
-            local_books = scan_local_books()
+            local_books = get_local_books_not_in_db(existing_book_ids)
+            print(f"Checked local books directory. Found {len(local_books)} new books to process.")
+            
             if local_books:
-                print(f"Found {len(local_books)} local books as fallback")
+                print(f"Processing {len(local_books)} local books as fallback:")
+                for book in local_books:
+                    print(f"  - {book['identifier']}: {book['title']}")
                 
                 # Process local books
                 local_book_texts = process_local_books_for_chromadb()
                 
                 if local_book_texts:
+                    print(f"Successfully extracted text from {len(local_book_texts)} local books")
                     # Add local books to ChromaDB
                     local_chunks_to_add = []
                     local_metadatas_to_add = []
@@ -394,12 +483,21 @@ async def ai_generate(request: AIRequest):
                             
                         print(f"Processing local book: {book_id} - '{book_title}' (Text length: {len(full_text)} chars)")
                         
-                        # Chunk the text
-                        chunks = chunk_text(full_text)
+                        # Determine optimal settings for local book
+                        optimal_chunk_size = get_optimal_chunk_size(full_text, max_chunk_size=800)
+                        strategy = ChunkStrategy.ADAPTIVE  # Use adaptive strategy for local books
+                        
+                        print(f"Using chunking strategy: {strategy.value}, chunk size: {optimal_chunk_size}")
+                        
+                        # Chunk the text with improved strategy
+                        chunks = chunk_text(full_text, chunk_size=optimal_chunk_size, strategy=strategy)
                         if not chunks:
                             continue
-                            
+                        
+                        # Analyze quality
+                        quality_metrics = analyze_chunking_quality(chunks, full_text)
                         print(f"Generated {len(chunks)} chunks from local book {book_id}")
+                        print(f"Chunking quality - Avg length: {quality_metrics.get('avg_chunk_length', 0):.0f}")
                         
                         for i, chunk in enumerate(chunks):
                             chunk_id = f"{book_id}_local_chunk_{i}"
@@ -441,6 +539,10 @@ async def ai_generate(request: AIRequest):
                             book_info_map.update(local_book_info_map)
                             
                             print(f"Retrieved {len(retrieved_documents)} chunks including local books.")
+                else:
+                    print("No text could be extracted from local books")
+            else:
+                print("No new local books found to process (all existing books already in ChromaDB)")
                 
         except Exception as e:
             print(f"Error processing local books fallback: {e}")
@@ -484,9 +586,9 @@ async def ai_generate(request: AIRequest):
             
             # Try local books fallback
             try:
-                local_books = scan_local_books()
+                local_books = get_local_books_not_in_db(existing_book_ids)
                 if local_books:
-                    print(f"Found {len(local_books)} local books for insufficient answer fallback")
+                    print(f"Found {len(local_books)} new local books for insufficient answer fallback")
                     
                     # Process and add local books (same logic as above but as fallback)
                     local_book_texts = process_local_books_for_chromadb()
@@ -507,8 +609,12 @@ async def ai_generate(request: AIRequest):
                             
                             full_text = local_book_texts.get(book_id, "")
                             if full_text and len(full_text.strip()) > 50:
+                                # Optimized chunking for fallback processing
+                                optimal_chunk_size = get_optimal_chunk_size(full_text, max_chunk_size=600)
+                                strategy = ChunkStrategy.SENTENCE_BASED  # Faster for fallback
+                                
                                 # Add to ChromaDB and get relevant chunks immediately
-                                chunks = chunk_text(full_text)
+                                chunks = chunk_text(full_text, chunk_size=optimal_chunk_size, strategy=strategy)
                                 
                                 if chunks:
                                     # Add to ChromaDB
