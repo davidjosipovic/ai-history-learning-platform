@@ -146,6 +146,14 @@ def chunk_by_semantic_breaks(text: str, chunk_size: int) -> List[str]:
         r'"\s*\n\s*"',            # Dialogue breaks
         r'\n\s*\d+\.\s+',         # Numbered lists
         r'\n\s*[IVX]+\.\s+',      # Roman numerals
+        # Biographical semantic breaks
+        r'\n\s*When I was',       # Childhood memories
+        r'\n\s*Years later',      # Time transitions
+        r'\n\s*After',            # Sequential events
+        r'\n\s*During',           # Time periods
+        r'\n\s*In \d{4}',         # Year markers
+        r'\n\s*The next',         # Chronological progression
+        r'"\s*[A-Z]',             # Direct speech starts
     ]
     
     # Find potential break points
@@ -219,8 +227,30 @@ def chunk_adaptive(text: str, chunk_size: int) -> List[str]:
     avg_paragraph_length = len(text) / max(paragraph_count, 1)
     avg_sentence_length = len(text) / max(sentence_count, 1)
     
+    # Check for biographical/narrative content indicators
+    biographical_indicators = [
+        r'\b(born|birth|childhood|grew up|parents|family)\b',
+        r'\b(education|school|university|college)\b',
+        r'\b(career|work|job|profession)\b',
+        r'\b(marriage|married|wife|husband|children)\b',
+        r'\b(death|died|funeral|legacy)\b',
+        r'\b(age|years old|when he|when she)\b'
+    ]
+    
+    biographical_score = 0
+    for pattern in biographical_indicators:
+        if re.search(pattern, text, re.IGNORECASE):
+            biographical_score += 1
+    
+    # Check for dialogue content (common in autobiographies)
+    dialogue_count = len(re.findall(r'"[^"]{10,}"', text))
+    dialogue_ratio = dialogue_count / max(sentence_count, 1)
+    
     # Choose strategy based on characteristics
-    if paragraph_count > 3 and avg_paragraph_length < chunk_size * 0.8:
+    if biographical_score >= 3 and dialogue_ratio > 0.1:
+        # Biographical content with dialogue - use semantic breaks for better context preservation
+        return chunk_by_semantic_breaks(text, chunk_size)
+    elif paragraph_count > 3 and avg_paragraph_length < chunk_size * 0.8:
         # Good paragraph structure
         return chunk_by_paragraphs(text, chunk_size)
     elif avg_sentence_length < chunk_size * 0.3:

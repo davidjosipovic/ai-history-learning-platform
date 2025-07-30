@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api import search, parse, ai_refactored
+from app.api import search, parse, ai_refactored, ai_simple, books
 
 app = FastAPI(title="AI RAG Service", description="Retrieval-Augmented Generation and AI logic for search, parsing, and answer generation.")
 
@@ -54,3 +54,5 @@ async def reset_chromadb():
 app.include_router(search.router, prefix="/search", tags=["search"])
 app.include_router(parse.router, prefix="/parse", tags=["parse"])
 app.include_router(ai_refactored.router, prefix="/ai", tags=["ai"])
+app.include_router(ai_simple.router, prefix="/ai-simple", tags=["ai-simple"])
+app.include_router(books.router, prefix="/books", tags=["books"])

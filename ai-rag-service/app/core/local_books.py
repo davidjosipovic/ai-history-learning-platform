@@ -27,7 +27,9 @@ def scan_local_books() -> List[Dict]:
     supported_extensions = ['.pdf', '.docx', '.txt', '.epub']
     books = []
     
-    print(f"Scanning local books directory: {books_dir}")
+    # Only log directory path once per scan if verbose mode is requested
+    if not hasattr(scan_local_books, '_suppress_logs'):
+        print(f"Scanning local books directory: {books_dir}")
     
     for root, dirs, files in os.walk(books_dir):
         for file in files:
@@ -51,9 +53,13 @@ def scan_local_books() -> List[Dict]:
                 }
                 
                 books.append(book_metadata)
-                print(f"Found local book: {book_title} ({file_ext})")
+                # Only log individual books if not suppressed
+                if not hasattr(scan_local_books, '_suppress_logs'):
+                    print(f"Found local book: {book_title} ({file_ext})")
     
-    print(f"Found {len(books)} local books")
+    # Only log summary if not suppressed
+    if not hasattr(scan_local_books, '_suppress_logs'):
+        print(f"Found {len(books)} local books")
     return books
 
 def extract_text_from_local_book(file_path: str, file_type: str) -> str:

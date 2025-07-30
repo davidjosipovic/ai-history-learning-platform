@@ -119,10 +119,16 @@ def get_existing_book_ids() -> set:
         return set()
     
     try:
+        # Check if collection is empty first
+        collection_count = collection.count()
+        if collection_count == 0:
+            print("ChromaDB collection is empty")
+            return set()
+        
         # Dohvati sve dokumente (ograniči na razuman broj)
         results = collection.query(
             query_texts=["dummy query"],
-            n_results=min(collection.count(), 10000),  # Ograniči na maksimalno 10000 dokumenata
+            n_results=min(collection_count, 10000),  # Ograniči na maksimalno 10000 dokumenata
             include=['metadatas']
         )
         
@@ -133,7 +139,9 @@ def get_existing_book_ids() -> set:
                 if book_id:
                     existing_book_ids.add(book_id)
         
-        print(f"Found {len(existing_book_ids)} existing books in ChromaDB")
+        # Only log if called directly, not from internal calls
+        if not hasattr(get_existing_book_ids, '_called_internally'):
+            print(f"Found {len(existing_book_ids)} existing books in ChromaDB")
         return existing_book_ids
         
     except Exception as e:
