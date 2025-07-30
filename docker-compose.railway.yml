@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # AI RAG Service (Python/FastAPI)
+  ai-rag-service:
+    build:
+      context: ./ai-rag-service
+      dockerfile: Dockerfile
+    container_name: ai-rag-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ai_chroma_data:/app/chroma_db_data
+      # Remove local books mount for cloud deployment
+      # Books are now baked into the Docker image
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PYTHONPATH=/app
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Main API (Node.js/NestJS)
+  main-api:
+    build:
+      context: ./main-api
+      dockerfile: Dockerfile
+    container_name: main-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - AI_RAG_SERVICE_URL=http://ai-rag-service:8000
+    networks:
+      - ai-network
+    depends_on:
+      ai-rag-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend (React/Vite with Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "80:80"
+    networks:
+      - ai-network
+    depends_on:
+      main-api:
+        condition: service_healthy
+      ai-rag-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  ai_chroma_data:
+    driver: local
+
+networks:
+  ai-network:
+    driver: bridge
