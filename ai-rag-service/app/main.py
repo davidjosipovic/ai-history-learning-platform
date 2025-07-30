@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api import search, parse, ai
+from app.api import search, parse, ai_refactored
 
 app = FastAPI(title="AI RAG Service", description="Retrieval-Augmented Generation and AI logic for search, parsing, and answer generation.")
 
@@ -9,7 +9,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy"} 
 
 @app.get("/local-books")
 async def list_local_books():
@@ -53,4 +53,4 @@ async def reset_chromadb():
 
 app.include_router(search.router, prefix="/search", tags=["search"])
 app.include_router(parse.router, prefix="/parse", tags=["parse"])
-app.include_router(ai.router, prefix="/ai", tags=["ai"])
+app.include_router(ai_refactored.router, prefix="/ai", tags=["ai"])

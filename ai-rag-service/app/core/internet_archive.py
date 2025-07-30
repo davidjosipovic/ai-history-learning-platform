@@ -44,13 +44,24 @@ def generate_keywords_from_question(question: str) -> List[str]:
         "Fokusiraj se na **glavne povijesne entitete** (države, organizacije, pokreti) i **puna imena osoba**. "
         "**STRATEGIJA**: "
         "1. Glavni entitet (država/organizacija): koristi puni naziv (npr. 'Nezavisna Država Hrvatska', 'Soviet Union', 'Roman Empire') "
-        "2. Ključne osobe: UVIJEK puno ime i prezime (npr. 'Napoleon Bonaparte', 'Winston Churchill', 'Ante Pavelić') "
-        "3. Specifični kontekst: organizacije, regije, godine ako su ključne "
-        "4. Za vremenska/detaljka pitanja: uključi kontekst (npr. 'church sunday morning', 'arrived time') "
+        "2. Ključne osobe: UVIJEK puno ime i prezime (npr. 'Napoleon Bonaparte', 'Winston Churchill', 'Barack Obama', 'Ante Pavelić') "
+        "3. Političari i javne osobe: uključi poziciju (npr. 'Barack Obama president', 'Hillary Clinton secretary') "
+        "4. Specifični kontekst: organizacije, regije, godine ako su ključne "
+        "5. Za vremenska/detaljka pitanja: uključi kontekst (npr. 'church sunday morning', 'arrived time') "
+        "**POSEBNO za poznate osobe**: "
+        "- Barack Obama → ['Barack Obama', 'president', 'United States', 'Dreams from My Father'] "
+        "- Donald Trump → ['Donald Trump', 'president', 'United States'] "
+        "- Vladimir Putin → ['Vladimir Putin', 'Russia', 'president'] "
+        "**POSEBNO za hrvatske ratove i konflikte**: "
+        "- Domovinski rat → ['Croatian War of Independence', 'Croatia 1991', 'Yugoslav Wars', 'Franjo Tuđman'] "
+        "- NDH → ['Nezavisna Država Hrvatska', 'Independent State of Croatia', 'Ante Pavelić', 'ustaše'] "
+        "- Jugoslavija → ['Yugoslavia', 'Josip Broz Tito', 'Socialist Federal Republic'] "
         "**IZBJEGAVAJ** općenite termine kao 'World War II' - fokusiraj se na specifične entitete. "
         "**JEZIK**: Koristi jezik koji će dati najbolje rezultate na Internet Archive (često engleski za internacionalne teme). "
         "Rezultat mora biti JSON array stringova (maksimalno 4 termina). "
         "PRIMJERI: "
+        "- Za 'Kada je bio domovinski rat?' → [\"Croatian War of Independence\", \"Croatia 1991\", \"Yugoslav Wars\", \"Franjo Tuđman\"] "
+        "- Za 'Tko je bio Barack Obama?' → [\"Barack Obama\", \"president\", \"United States\", \"Dreams from My Father\"] "
         "- Za 'Koji su uzroci osnivanja NDH?' → [\"Nezavisna Država Hrvatska\", \"Ante Pavelić\", \"ustaše\", \"Croatia 1941\"] "
         "- Za 'Tko je vodio NDH?' → [\"Nezavisna Država Hrvatska\", \"Ante Pavelić\", \"ustaše\"] "
         "- Za 'What caused Roman Empire fall?' → [\"Roman Empire\", \"barbarian invasions\", \"Constantinople\"] "
@@ -126,19 +137,33 @@ def build_internet_archive_query_string(keywords: List[str]) -> str:
             'ndh', 'nezavisna država', 'hrvatska', 'croatia', 
             'yugoslavia', 'soviet union', 'roman empire', 'byzantine',
             'ottoman', 'british empire', 'french republic', 'third reich',
-            'ustaše', 'ustase', 'partizani', 'partisan', 'nazi', 'communist'
+            'ustaše', 'ustase', 'partizani', 'partisan', 'nazi', 'communist',
+            'united states', 'america', 'russia', 'china', 'germany'
         ]):
             main_entities.append(keyword)
-        # Detect people names (containing both first and last name)
-        elif len(keyword.split()) >= 2 and any(char.isupper() for char in keyword):
+        # Detect people names (containing both first and last name OR known political figures)
+        elif (len(keyword.split()) >= 2 and any(char.isupper() for char in keyword)) or any(name in keyword_lower for name in [
+            'barack obama', 'obama', 'donald trump', 'trump', 'vladimir putin', 'putin',
+            'winston churchill', 'churchill', 'napoleon', 'bonaparte', 'hitler', 'stalin',
+            'lincoln', 'washington', 'roosevelt', 'kennedy', 'clinton', 'biden', 'bush',
+            'ante pavelić', 'pavelić', 'tito', 'tuđman', 'mesić', 'milanović'
+        ]):
             people_names.append(keyword)
         else:
             other_terms.append(keyword)
     
     query_parts = []
     
+    # PRIORITIZE people names - add them first with highest importance
+    if people_names:
+        for person in people_names:
+            if " " in person:
+                query_parts.append(f'"{person}"')
+            else:
+                query_parts.append(person)
+    
     # Build main entity group with OR (synonyms) and add context for historical topics
-    if main_entities:
+    if main_entities and len(query_parts) < 3:  # Only add entities if we don't have too many people terms
         entity_parts = []
         for entity in main_entities:
             if " " in entity:
@@ -151,19 +176,11 @@ def build_internet_archive_query_string(keywords: List[str]) -> str:
                 else:
                     entity_parts.append(entity)
         
-        # Combine entity parts with OR
+        # Combine entity parts with OR, but give lower priority than people
         if len(entity_parts) > 1:
             query_parts.append(f"({' OR '.join(entity_parts)})")
-        else:
+        elif len(entity_parts) == 1:
             query_parts.append(entity_parts[0])
-    
-    # Add people names with AND (must have specific person)
-    if people_names:
-        for person in people_names:
-            if " " in person:
-                query_parts.append(f'"{person}"')
-            else:
-                query_parts.append(person)
     
     # Add minimal contextual terms for better precision (avoid over-specification)
     if has_historical_entities and len(query_parts) < 2:

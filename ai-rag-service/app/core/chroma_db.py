@@ -353,3 +353,28 @@ def query_with_multiple_strategies(query: str, n_results: int = 3) -> Dict[str, 
         print(f"ERROR: Failed to query ChromaDB with multiple strategies: {e}")
         return {"ids": [], "embeddings": [], "documents": [], "metadatas": [], "distances": []}
 
+
+def delete_book_chunks(book_id: str):
+    """Delete all chunks for a specific book from ChromaDB."""
+    try:
+        collection = get_or_create_collection()
+        
+        # Get all documents for this book
+        result = collection.get(where={"book_id": book_id})
+        
+        if result and result.get("ids"):
+            chunk_ids = result["ids"]
+            print(f"Deleting {len(chunk_ids)} chunks for book: {book_id}")
+            
+            # Delete all chunks for this book
+            collection.delete(ids=chunk_ids)
+            print(f"Successfully deleted {len(chunk_ids)} chunks for book: {book_id}")
+            return len(chunk_ids)
+        else:
+            print(f"No chunks found for book: {book_id}")
+            return 0
+            
+    except Exception as e:
+        print(f"ERROR: Failed to delete chunks for book {book_id}: {e}")
+        return 0
+
