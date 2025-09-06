@@ -2,7 +2,15 @@ import os
 import json
 from typing import List, Dict, Optional
 from pathlib import Path
-import fitz  # PyMuPDF for PDF processing
+
+# Try to import PyMuPDF, handle gracefully if not available
+try:
+    import fitz  # PyMuPDF for PDF processing
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    print("Warning: PyMuPDF (fitz) not available. PDF processing will be limited.")
+    PYMUPDF_AVAILABLE = False
+
 import docx  # python-docx for Word documents
 import zipfile
 import xml.etree.ElementTree as ET
@@ -84,6 +92,10 @@ def extract_text_from_local_book(file_path: str, file_type: str) -> str:
 
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF using PyMuPDF."""
+    if not PYMUPDF_AVAILABLE:
+        print(f"PyMuPDF not available, cannot extract text from PDF: {file_path}")
+        return ""
+    
     try:
         doc = fitz.open(file_path)
         text = ""
