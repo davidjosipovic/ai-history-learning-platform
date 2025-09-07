@@ -219,6 +219,7 @@ def query_similar_documents(query: str, n_results: int = 3) -> Dict[str, List[Un
     """
     Queries the ChromaDB collection for documents similar to the given query text.
     Embeddings are automatically generated for the query text using the collection's embedding function.
+    Implements diversification to get results from multiple books.
     """
     collection = get_or_create_collection() # Get the collection instance
     if collection is None:
@@ -228,22 +229,63 @@ def query_similar_documents(query: str, n_results: int = 3) -> Dict[str, List[Un
     try:
         print(f"DEBUG: Querying collection with {collection.count()} total documents")
         
-        results = collection.query(
+        # Get more results initially to allow for diversification
+        initial_results = collection.query(
             query_texts=[query],
-            n_results=n_results,
+            n_results=min(n_results * 5, 50),  # Get 5x more results, max 50
             include=['documents', 'metadatas', 'distances'] # Explicitly request what you need
         )
         
-        # Debug: Print what book_ids are returned
-        if results.get("metadatas") and results["metadatas"][0]:
-            returned_book_ids = set()
-            for metadata in results["metadatas"][0]:
-                returned_book_ids.add(metadata.get("book_id", "MISSING"))
-            print(f"DEBUG: Query returned documents from book_ids: {returned_book_ids}")
-        
-        # ChromaDB's query method returns results in a specific format:
-        # {'ids': [[]], 'embeddings': [[]], 'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
-        # The inner lists correspond to query_texts, so we usually take the first element if querying with one text.
+        # Diversify results by book_id
+        if initial_results.get("documents") and initial_results["documents"][0]:
+            documents = initial_results["documents"][0]
+            metadatas = initial_results["metadatas"][0]
+            distances = initial_results["distances"][0]
+            
+            # Group by book_id and select best results from each book
+            book_groups = {}
+            for i, (doc, meta, dist) in enumerate(zip(documents, metadatas, distances)):
+                book_id = meta.get("book_id", "unknown")
+                if book_id not in book_groups:
+                    book_groups[book_id] = []
+                book_groups[book_id].append((doc, meta, dist, i))
+            
+            print(f"DEBUG: Found results from {len(book_groups)} different books: {list(book_groups.keys())}")
+            
+            # Select best results from each book (max 2 per book for diversity)
+            diversified_results = []
+            max_per_book = max(1, n_results // len(book_groups)) if book_groups else 1
+            max_per_book = min(max_per_book, 3)  # Cap at 3 per book
+            
+            for book_id, book_results in book_groups.items():
+                # Sort by distance (best first) and take top results
+                book_results.sort(key=lambda x: x[2])  # Sort by distance
+                selected = book_results[:max_per_book]
+                diversified_results.extend(selected)
+            
+            # Sort final results by distance and limit to requested number
+            diversified_results.sort(key=lambda x: x[2])
+            diversified_results = diversified_results[:n_results]
+            
+            # Rebuild results structure
+            final_documents = [item[0] for item in diversified_results]
+            final_metadatas = [item[1] for item in diversified_results]
+            final_distances = [item[2] for item in diversified_results]
+            
+            results = {
+                "documents": [final_documents],
+                "metadatas": [final_metadatas],
+                "distances": [final_distances]
+            }
+            
+            # Debug: Print diversified book_ids
+            diversified_book_ids = set()
+            for metadata in final_metadatas:
+                diversified_book_ids.add(metadata.get("book_id", "MISSING"))
+            print(f"DEBUG: After diversification, results from book_ids: {diversified_book_ids}")
+            
+        else:
+            results = initial_results
         
         return results
     except Exception as e:

@@ -35,19 +35,23 @@ def format_documents_for_response(retrieved_documents: list) -> list:
             # Local book
             clean_title = book_title.replace("local_", "").replace("-", " ").replace("_", " ")
             link = f"📁 Lokalna knjiga: {clean_title}"
+            source_type = "local"
         else:
             # Internet Archive book
             link = f"https://archive.org/details/{book_id}"
+            source_type = "internet_archive"
         
         # Create document preview
-        content_preview = doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"]
+        content_preview = doc["content"][:300] + "..." if len(doc["content"]) > 300 else doc["content"]
         
+        # Match SearchResult schema
         source_docs.append({
+            "document_id": f"{book_id}_chunk_{chunk_index}",
             "title": book_title,
             "link": link,
-            "content_preview": content_preview,
-            "chunk_info": f"Odlomak {chunk_index + 1}",
-            "relevance_score": round(1 - doc.get("score", 0), 3)  # Convert distance to relevance
+            "content": content_preview,
+            "score": round(1 - doc.get("score", 0), 3),  # Convert distance to relevance
+            "source_type": source_type
         })
     
     return source_docs
@@ -67,7 +71,7 @@ def generate_answer_with_context(question: str, retrieved_documents: list) -> st
     context = "\n\n".join(context_parts)
     
     # Create prompt
-    prompt = f"""Odgovori na pitanje koristeći isključivo informacije iz priloženih izvora. 
+    prompt = f"""Ti si stručnjak za hrvatsku i jugoslavensku povijest. Odgovori na pitanje koristeći informacije iz priloženih izvora.
 
 PITANJE: {question}
 
@@ -76,10 +80,10 @@ DOSTUPNI IZVORI:
 
 INSTRUKCIJE:
 - Odgovori na hrvatskom jeziku
-- Koristi samo informacije iz priloženih izvora
-- Ako nema dovoljno informacija u izvorima, reci da nema dovoljno podataka
-- Budi precizan i objektivan
-- Navedi koje izvore koristiš u odgovoru
+- Koristi informacije iz priloženih izvora da daš što potpuniji odgovor
+- Ako ima dovoljno informacija, budi detaljan i informativan
+- Ako nema dovoljno informacija u izvorima, koristi ono što imaš i spomeni da su informacije ograničene
+- Na kraju odgovora ukratko spomeni koji izvori su korišteni
 
 ODGOVOR:"""
 
@@ -282,7 +286,7 @@ async def ai_generate(request: AIRequest):
             if not retrieved_documents:
                 return AIResponse(
                     answer="Nažalost, nisam pronašao relevantne informacije za vaše pitanje ni u lokalnoj bazi ni na Internet Archive. Molimo pokušajte s drugim pitanjem ili dodajte više knjiga u bazu.",
-                    sources=[]
+                    source_documents=[]
                 )
         
         print(f"✅ Generating answer with {len(retrieved_documents)} documents")
@@ -295,7 +299,7 @@ async def ai_generate(request: AIRequest):
         
         return AIResponse(
             answer=answer,
-            sources=source_documents
+            source_documents=source_documents
         )
         
     except Exception as e:

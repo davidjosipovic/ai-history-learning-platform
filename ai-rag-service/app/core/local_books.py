@@ -91,20 +91,34 @@ def extract_text_from_local_book(file_path: str, file_type: str) -> str:
         return ""
 
 def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text from PDF using PyMuPDF."""
-    if not PYMUPDF_AVAILABLE:
-        print(f"PyMuPDF not available, cannot extract text from PDF: {file_path}")
-        return ""
+    """Extract text from PDF using PyMuPDF or pdfplumber as fallback."""
+    # Try PyMuPDF first if available
+    if PYMUPDF_AVAILABLE:
+        try:
+            doc = fitz.open(file_path)
+            text = ""
+            for page in doc:
+                text += page.get_text()
+            doc.close()
+            return text
+        except Exception as e:
+            print(f"Error reading PDF with PyMuPDF {file_path}: {e}")
     
+    # Fallback to pdfplumber
     try:
-        doc = fitz.open(file_path)
+        import pdfplumber
         text = ""
-        for page in doc:
-            text += page.get_text()
-        doc.close()
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
         return text
+    except ImportError:
+        print(f"Neither PyMuPDF nor pdfplumber available for PDF: {file_path}")
+        return ""
     except Exception as e:
-        print(f"Error reading PDF {file_path}: {e}")
+        print(f"Error reading PDF with pdfplumber {file_path}: {e}")
         return ""
 
 def extract_text_from_docx(file_path: str) -> str:
